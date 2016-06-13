@@ -65,8 +65,8 @@ pub struct PartRDB {
     keys:              HashMap<u32, HashSet<EncodedStringVec>>,
 }
 
-const PART_FILE_PREFIX: &'static str = "PART_";
-const PART_FILE_SUFFIX: &'static str = ".rdb";
+const PART_FILE_PREFIX:  &'static str = "PART_";
+const PART_FILE_SUFFIX:  &'static str = ".rdb";
 const MERGE_FILE:        &'static str = "MERGE.rdb";
 const MERGE_RDB_VERSION: &'static str = "0006";
 

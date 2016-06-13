@@ -2,6 +2,7 @@
 name = "rmerger"
 version = "0.1.0"
 authors = ["ygurumi <ygurumi@gmail.com>"]
+license = "MIT"
 
 [dependencies]
 log        = "0.3"

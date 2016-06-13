@@ -379,11 +379,11 @@ named!(
         s: encoded_length ~
         r: switch!(
             value!(s),
-            EncodedLength::I(n,      _) => map!(take!(n), |v| EncodedString::Raw(s, v)) |
-            EncodedLength::S(0b0000, _) => map!(take!(1), |v| EncodedString::Int(s, v)) |
-            EncodedLength::S(0b0001, _) => map!(take!(2), |v| EncodedString::Int(s, v)) |
-            EncodedLength::S(0b0010, _) => map!(take!(4), |v| EncodedString::Int(s, v)) |
-            EncodedLength::S(0b0011, _) => chain!(
+            EncodedLength::I(n,          _) => map!(take!(n), |v| EncodedString::Raw(s, v)) |
+            EncodedLength::S(0b00000000, _) => map!(take!(1), |v| EncodedString::Int(s, v)) |
+            EncodedLength::S(0b00000001, _) => map!(take!(2), |v| EncodedString::Int(s, v)) |
+            EncodedLength::S(0b00000010, _) => map!(take!(4), |v| EncodedString::Int(s, v)) |
+            EncodedLength::S(0b00000011, _) => chain!(
                 t: encoded_length ~
                 u: encoded_length ~
                 v: take!(u32::from(t)),
@@ -472,7 +472,7 @@ named!(
 named!(
     expiry_time_sec(&[u8]) -> ExpiryTime,
     chain!(
-        tag!([0xfc]) ~
+        tag!([0xfd]) ~
         e: take!(4),
         || ExpiryTime::S(e)
     )
@@ -551,3 +551,106 @@ named!(
         || RDB(v, d, c)
     )
 );
+
+
+/// test
+#[test]
+fn encoded_length_test() {
+    use nom::IResult::*;
+    use self::EncodedLength::*;
+
+    let case_00_1_in = [0b00000000];
+    assert_eq!(encoded_length(&case_00_1_in), Done(&[][..], I(0, &case_00_1_in[..])));
+
+    let case_00_2_in = [0b00111111];
+    assert_eq!(encoded_length(&case_00_2_in), Done(&[][..], I(63, &case_00_2_in[..])));
+
+
+    let case_01_1_in = [0b01000000, 0x40];
+    assert_eq!(encoded_length(&case_01_1_in), Done(&[][..], I(64, &case_01_1_in[..])));
+
+    let case_01_2_in = [0b01111111, 0xff];
+    assert_eq!(encoded_length(&case_01_2_in), Done(&[][..], I(16383, &case_01_2_in[..])));
+
+
+    let case_10_1_in = [0b10000000, 0x00, 0x00, 0x40, 0x00];
+    assert_eq!(encoded_length(&case_10_1_in), Done(&[][..], I(16384, &case_10_1_in[..])));
+
+    let case_10_2_in = [0b10000000, 0xff, 0xff, 0xff, 0xff];
+    assert_eq!(encoded_length(&case_10_2_in), Done(&[][..], I(4294967295, &case_10_2_in[..])));
+
+
+    let case_11_1_in = [0b11000000];
+    assert_eq!(encoded_length(&case_11_1_in), Done(&[][..], S(0, &case_11_1_in[..])));
+
+    let case_11_2_in = [0b11000011];
+    assert_eq!(encoded_length(&case_11_2_in), Done(&[][..], S(3, &case_11_2_in[..])));
+}
+
+#[test]
+fn encoded_string_test() {
+    use nom::IResult::*;
+    use self::EncodedString::*;
+    use self::EncodedLength::*;
+
+    let case_raw_1_in = [0b00000001, 0x30];
+    let case_raw_1_result = Raw(I(1, &case_raw_1_in[0..1]), b"0");
+    assert_eq!(encoded_string(&case_raw_1_in), Done(&[][..], case_raw_1_result));
+
+
+    let case_int_1_in = [0b11000000, 0x30, 0x00, 0x00, 0x00];
+    let case_int_1_result = Int(S(0, &case_int_1_in[0..1]), &case_int_1_in[1..2]);
+    let case_int_1_rest = [0x00, 0x00, 0x00];
+    assert_eq!(encoded_string(&case_int_1_in), Done(&case_int_1_rest[..], case_int_1_result));
+
+    let case_int_2_in = [0b11000001, 0x30, 0x00, 0x00, 0x00];
+    let case_int_2_result = Int(S(1, &case_int_2_in[0..1]), &case_int_2_in[1..3]);
+    let case_int_2_rest = [0x00, 0x00];
+    assert_eq!(encoded_string(&case_int_2_in), Done(&case_int_2_rest[..], case_int_2_result));
+
+    let case_int_3_in = [0b11000010, 0x30, 0x00, 0x00, 0x00];
+    let case_int_3_result = Int(S(2, &case_int_3_in[0..1]), &case_int_3_in[1..]);
+    let case_int_3_rest = [];
+    assert_eq!(encoded_string(&case_int_3_in), Done(&case_int_3_rest[..], case_int_3_result));
+
+
+    let case_lzf_1_in = [0b11000011, 0b00000001, 0b00000001, 0x30];
+    let case_lzf_1_result = Lzf(S(3, &case_lzf_1_in[0..1]),
+                                I(1, &case_lzf_1_in[1..2]),
+                                I(1, &case_lzf_1_in[2..3]),
+                                &case_lzf_1_in[3..]);
+    let case_lzf_1_rest = [];
+    assert_eq!(encoded_string(&case_lzf_1_in), Done(&case_lzf_1_rest[..], case_lzf_1_result));
+}
+
+#[test]
+fn rdb_serde_test() {
+    use nom::IResult::*;
+    let case_1 = [
+        0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x30, 0x36, // REDIS0004
+        0xfe, 0x00,                                           // <DatabaseNumber 0>
+        VT_LIST.bits(),
+        0x01, 0x30,
+        0x02, 0x01, 0x31, 0x01, 0x32,
+        0xfc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+        VT_SET.bits(),
+        0x01, 0x31,
+        0x02, 0x01, 0x31, 0x01, 0x32,
+        0xfd, 0x00, 0x00, 0x00, 0xff,
+        VT_SORTEDSET.bits(),
+        0x01, 0x31,
+        0x02,
+        0x01, 0x31, 0x04, 0x00, 0x00, 0x00, 0x00,
+        0x01, 0x32, 0x04, 0x00, 0x00, 0x00, 0x00,
+        0xff,                                                 // end of rdb
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00        // checksum
+    ];
+    let mut case_1_ser = Vec::new();
+    match rdb(&case_1[..]) {
+        Done(_, rdb) => {
+            assert!(rdb.ser(&mut case_1_ser).is_ok());
+            assert_eq!(&case_1[..], &case_1_ser[..]);
+        },
+        _ => assert!(false),
+    }
+}
