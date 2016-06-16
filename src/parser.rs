@@ -2,6 +2,8 @@ use nom::*;
 use std::io::{
     Write,
     Result as IoResult,
+    Error as IoError,
+    ErrorKind as IoErrorKind,
 };
 
 
@@ -25,6 +27,7 @@ pub enum EncodedLength<'a> {
     I(u32, &'a [u8]),
     S(u8,  &'a [u8]),
 }
+use self::EncodedLength::*;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum EncodedString<'a> {
@@ -32,6 +35,7 @@ pub enum EncodedString<'a> {
     Int(EncodedLength<'a>, &'a [u8]),
     Lzf(EncodedLength<'a>, EncodedLength<'a>, EncodedLength<'a>, &'a [u8]),
 }
+use self::EncodedString::*;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct EncodedList<'a>(EncodedLength<'a>, Vec<EncodedString<'a>>);
@@ -69,12 +73,14 @@ pub enum EncodedValue<'a> {
     VC(EncodedSortedsetZiplist<'a>),
     VD(EncodedHashmapZiplist<'a>),
 }
+use self::EncodedValue::*;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ExpiryTime<'a> {
-    MS(&'a [u8]),
-    S(&'a [u8]),
+    MilliSec(&'a [u8]),
+    Sec(&'a [u8]),
 }
+use self::ExpiryTime::*;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Record<'a>(pub EncodedString<'a>, pub EncodedValue<'a>, pub Option<ExpiryTime<'a>>);
@@ -99,8 +105,61 @@ pub struct RDB<'a>(pub RDBVersion<'a>, pub Vec<Database<'a>>, pub Option<Checksu
 impl<'a> From<EncodedLength<'a>> for u32 {
     fn from(l: EncodedLength<'a>) -> Self {
         match l {
-            EncodedLength::I(n, _) => n,
-            EncodedLength::S(_, _) => 0,
+            I(n, _) => n,
+            S(_, _) => 0,
+        }
+    }
+}
+
+/// decode
+pub trait RDBDec<E> {
+    fn decode(dat: &E) -> IoResult<Self> where Self: Sized;
+}
+
+impl<'a> RDBDec<EncodedString<'a>> for String {
+    fn decode(dat: &EncodedString) -> IoResult<Self> {
+        match dat {
+            &Raw(_, r) => Ok(String::from_utf8_lossy(r).to_string()),
+            &Int(_, i) => Ok(i.iter().fold(0, |a, j| a << 8 | (*j as i32)).to_string()),
+            &Lzf(_, _, _, l) => {
+                let mut out = Vec::new();
+                let mut i = 0;
+                let mut o = 0;
+                let len = l.len();
+
+                while i < len {
+                    assert_result!(i < len, IoError::new(IoErrorKind::Other, "failed to decode LZF"));
+                    let ctrl = l[i] as usize;
+                    i+=1;
+
+                    if ctrl < (1 << 5) {
+                        let literal_len = ctrl + 1;
+                        let literal_end = i + literal_len;
+                        assert_result!(literal_end <= len, IoError::new(IoErrorKind::Other, "failed to decode LZF"));
+                        try!(out.write(&l[i..literal_end]));
+                        o += literal_len;
+                        i += literal_len;
+                    } else {
+                        let mut backref_len = ctrl >> 5;
+                        if backref_len == 7 {
+                            assert_result!(i < len, IoError::new(IoErrorKind::Other, "failed to decode LZF"));
+                            backref_len += l[i] as usize + 2;
+                            i += 1;
+                        }
+
+                        assert_result!(i < len, IoError::new(IoErrorKind::Other, "failed to decode LZF"));
+                        let backref_start = o - ((ctrl & 0x1f) << 8) - (l[i] as usize) - 1;
+                        i += 1;
+                        for j in backref_start..(backref_start+backref_len) {
+                            let buf = [out[j]];
+                            try!(out.write(&buf[..]));
+                            o += 1;
+                        }
+                    }
+                }
+
+                Ok(String::from_utf8_lossy(&out[..]).to_string())
+            }
         }
     }
 }
@@ -119,8 +178,8 @@ pub trait RDBSer {
 impl<'a> RDBSer for EncodedLength<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         match self {
-            &EncodedLength::I(_, s) => w.write(s),
-            &EncodedLength::S(_, s) => w.write(s),
+            &I(_, s) => w.write(s),
+            &S(_, s) => w.write(s),
         }
     }
 }
@@ -128,9 +187,9 @@ impl<'a> RDBSer for EncodedLength<'a> {
 impl<'a> RDBSer for EncodedString<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         match self {
-            &EncodedString::Raw(s, v) => Ok(try!(s.ser(w)) + try!(w.write(v))),
-            &EncodedString::Int(s, v) => Ok(try!(s.ser(w)) + try!(w.write(v))),
-            &EncodedString::Lzf(s, t, u, v) => Ok(
+            &Raw(s, v) => Ok(try!(s.ser(w)) + try!(w.write(v))),
+            &Int(s, v) => Ok(try!(s.ser(w)) + try!(w.write(v))),
+            &Lzf(s, t, u, v) => Ok(
                 try!(s.ser(w)) +
                 try!(t.ser(w)) +
                 try!(u.ser(w)) +
@@ -223,8 +282,8 @@ impl<'a> RDBSer for EncodedHashmapZiplist<'a> {
 impl<'a> RDBSer for ExpiryTime<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         match self {
-            &ExpiryTime::MS(v) => Ok(try!(w.write(&[0xfc][..])) + try!(w.write(v))),
-            &ExpiryTime::S(v)  => Ok(try!(w.write(&[0xfd][..])) + try!(w.write(v))),
+            &MilliSec(v) => Ok(try!(w.write(&[0xfc][..])) + try!(w.write(v))),
+            &Sec(v)      => Ok(try!(w.write(&[0xfd][..])) + try!(w.write(v))),
         }
     }
 }
@@ -239,47 +298,47 @@ impl<'a> RDBSer for Record<'a> {
         }
 
         match val {
-            &EncodedValue::V0(ref v) => {
+            &V0(ref v) => {
                 n += try!(w.write(&[VT_STRING.bits()][..]));
                 n += try!(key.ser(w));
                 n += try!(v.ser(w));
             },
-            &EncodedValue::V1(ref v) => {
+            &V1(ref v) => {
                 n += try!(w.write(&[VT_LIST.bits()][..]));
                 n += try!(key.ser(w));
                 n += try!(v.ser(w));
             },
-            &EncodedValue::V2(ref v) => {
+            &V2(ref v) => {
                 n += try!(w.write(&[VT_SET.bits()][..]));
                 n += try!(key.ser(w));
                 n += try!(v.ser(w));
             },
-            &EncodedValue::V3(ref v) => {
+            &V3(ref v) => {
                 n += try!(w.write(&[VT_SORTEDSET.bits()][..]));
                 n += try!(key.ser(w));
                 n += try!(v.ser(w));
             },
-            &EncodedValue::V4(ref v) => {
+            &V4(ref v) => {
                 n += try!(w.write(&[VT_HASHMAP.bits()][..]));
                 n += try!(key.ser(w));
                 n += try!(v.ser(w));
             },
-            &EncodedValue::VA(ref v) => {
+            &VA(ref v) => {
                 n += try!(w.write(&[VT_ZIPLIST.bits()][..]));
                 n += try!(key.ser(w));
                 n += try!(v.ser(w));
             },
-            &EncodedValue::VB(ref v) => {
+            &VB(ref v) => {
                 n += try!(w.write(&[VT_INTSET.bits()][..]));
                 n += try!(key.ser(w));
                 n += try!(v.ser(w));
             },
-            &EncodedValue::VC(ref v) => {
+            &VC(ref v) => {
                 n += try!(w.write(&[VT_SORTEDSET_ZIPLIST.bits()][..]));
                 n += try!(key.ser(w));
                 n += try!(v.ser(w));
             },
-            &EncodedValue::VD(ref v) => {
+            &VD(ref v) => {
                 n += try!(w.write(&[VT_HASHMAP_ZIPLIST.bits()][..]));
                 n += try!(key.ser(w));
                 n += try!(v.ser(w));
@@ -349,22 +408,22 @@ named!(
             peek!(bits!(pair!(take_bits!(u8, 2), take_bits!(u8, 6)))),
             (0b00, v) => map!(
                 take!(1),
-                |p| EncodedLength::I(v as u32, p)
+                |p| I(v as u32, p)
             ) |
             (0b01, _) => chain!(
                 p: peek!(take!(2)) ~
                 v: be_u16,
-                || EncodedLength::I(v as u32 & 0x3FFF, p)
+                || I(v as u32 & 0x3FFF, p)
             ) |
             (0b10, _) => chain!(
                 p: peek!(take!(5)) ~
                 take!(1) ~
                 v: be_u32,
-                || EncodedLength::I(v, p)
+                || I(v, p)
             ) |
             (0b11, v) => map!(
                 take!(1),
-                |p| EncodedLength::S(v, p)
+                |p| S(v, p)
             )
         ),
         || l
@@ -385,15 +444,15 @@ named!(
         s: encoded_length ~
         r: switch!(
             value!(s),
-            EncodedLength::I(n,          _) => map!(take!(n), |v| EncodedString::Raw(s, v)) |
-            EncodedLength::S(0b00000000, _) => map!(take!(1), |v| EncodedString::Int(s, v)) |
-            EncodedLength::S(0b00000001, _) => map!(take!(2), |v| EncodedString::Int(s, v)) |
-            EncodedLength::S(0b00000010, _) => map!(take!(4), |v| EncodedString::Int(s, v)) |
-            EncodedLength::S(0b00000011, _) => chain!(
+            I(n,          _) => map!(take!(n), |v| Raw(s, v)) |
+            S(0b00000000, _) => map!(take!(1), |v| Int(s, v)) |
+            S(0b00000001, _) => map!(take!(2), |v| Int(s, v)) |
+            S(0b00000010, _) => map!(take!(4), |v| Int(s, v)) |
+            S(0b00000011, _) => chain!(
                 t: encoded_length ~
                 u: encoded_length ~
                 v: take!(u32::from(t)),
-                || EncodedString::Lzf(s, t, u, v)
+                || Lzf(s, t, u, v)
             )
         ),
         || r
@@ -470,7 +529,7 @@ named!(
     chain!(
         tag!([0xfc]) ~
         e: take!(8),
-        || ExpiryTime::MS(e)
+        || MilliSec(e)
     )
 );
 
@@ -480,7 +539,7 @@ named!(
     chain!(
         tag!([0xfd]) ~
         e: take!(4),
-        || ExpiryTime::S(e)
+        || Sec(e)
     )
 );
 
@@ -492,15 +551,15 @@ named!(
         k: encoded_string ~
         v: switch!(
             value!(t),
-            VT_STRING            => map!(encoded_string,            |v| EncodedValue::V0(v)) |
-            VT_LIST              => map!(encoded_list,              |v| EncodedValue::V1(v)) |
-            VT_SET               => map!(encoded_set,               |v| EncodedValue::V2(v)) |
-            VT_SORTEDSET         => map!(encoded_sortedset,         |v| EncodedValue::V3(v)) |
-            VT_HASHMAP           => map!(encoded_hash,              |v| EncodedValue::V4(v)) |
-            VT_ZIPLIST           => map!(encoded_ziplist,           |v| EncodedValue::VA(v)) |
-            VT_INTSET            => map!(encoded_intset,            |v| EncodedValue::VB(v)) |
-            VT_SORTEDSET_ZIPLIST => map!(encoded_sortedset_ziplist, |v| EncodedValue::VC(v)) |
-            VT_HASHMAP_ZIPLIST   => map!(encoded_hashmap_ziplist,   |v| EncodedValue::VD(v))
+            VT_STRING            => map!(encoded_string,            |v| V0(v)) |
+            VT_LIST              => map!(encoded_list,              |v| V1(v)) |
+            VT_SET               => map!(encoded_set,               |v| V2(v)) |
+            VT_SORTEDSET         => map!(encoded_sortedset,         |v| V3(v)) |
+            VT_HASHMAP           => map!(encoded_hash,              |v| V4(v)) |
+            VT_ZIPLIST           => map!(encoded_ziplist,           |v| VA(v)) |
+            VT_INTSET            => map!(encoded_intset,            |v| VB(v)) |
+            VT_SORTEDSET_ZIPLIST => map!(encoded_sortedset_ziplist, |v| VC(v)) |
+            VT_HASHMAP_ZIPLIST   => map!(encoded_hashmap_ziplist,   |v| VD(v))
         ),
         || Record(k, v, o)
     )
@@ -560,11 +619,11 @@ named!(
 
 
 /// test
+#[cfg(test)]
+use nom::IResult::*;
+
 #[test]
 fn encoded_length_test() {
-    use nom::IResult::*;
-    use self::EncodedLength::*;
-
     let case_00_1_in = [0b00000000];
     assert_eq!(encoded_length(&case_00_1_in), Done(&[][..], I(0, &case_00_1_in[..])));
 
@@ -595,10 +654,6 @@ fn encoded_length_test() {
 
 #[test]
 fn encoded_string_test() {
-    use nom::IResult::*;
-    use self::EncodedString::*;
-    use self::EncodedLength::*;
-
     let case_raw_1_in = [0b00000001, 0x30];
     let case_raw_1_result = Raw(I(1, &case_raw_1_in[0..1]), b"0");
     assert_eq!(encoded_string(&case_raw_1_in), Done(&[][..], case_raw_1_result));
@@ -630,8 +685,30 @@ fn encoded_string_test() {
 }
 
 #[test]
+fn decode_encoded_string_test() {
+    let case_1 = [
+        0xc3,             // EncodedLength
+        0x0e,             // EncodedLength
+        0x21,             // EncodedLength
+        0x01, 0x61, 0x61, // literal aa
+        0xe0, 0x05, 0x00, // backref
+        0x00, 0x31,       // literal 1
+        0xe0, 0x05, 0x0e, // backref
+        0x01, 0x61, 0x61, // literal aa
+    ];
+    match encoded_string(&case_1[..]) {
+        Done(_, e) => {
+            match String::decode(&e) {
+                Ok(s) => assert_eq!(s, "aaaaaaaaaaaaaaaa1aaaaaaaaaaaaaaaa".to_string()),
+                _     => assert!(false),
+            }
+        },
+        _ => assert!(false),
+    }
+}
+
+#[test]
 fn rdb_serde_test() {
-    use nom::IResult::*;
     let case_1 = [
         0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x30, 0x36, // REDIS0004
         0xfe, 0x00,                                           // <DatabaseNumber 0>

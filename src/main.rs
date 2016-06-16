@@ -31,9 +31,9 @@ fn main() {
 
     let target_db = database_set(matches.opt_strs("d")).unwrap();
     if target_db.is_empty() {
-        info!("export targets: DB ALL");
+        info!("target DB: ALL");
     } else {
-        info!("export targets: DB {:?}", target_db);
+        info!("target DB: {:?}", target_db);
     }
 
     let check_duplication = !matches.opt_present("C");

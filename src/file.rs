@@ -2,7 +2,6 @@ use nix::sys::stat::fstat;
 use nix::sys::mman::{ mmap, munmap, PROT_READ, MAP_SHARED };
 use nix::libc::size_t;
 
-use std::fmt;
 use std::sync::Mutex;
 use std::os::unix::io::AsRawFd;
 use std::slice::from_raw_parts_mut;
@@ -12,38 +11,7 @@ use std::path::{ PathBuf, Path};
 use std::collections::{ HashSet, HashMap };
 use std::io::{ Result, Write, Error, ErrorKind };
 
-use super::parser::{ RDBSer, Record, EncodedString, DatabaseNumber, RDBVersion };
-
-// erase lifetime in order to compare keys after closing rdb files
-// TODO: decode EncodedString into String and check key duplication
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
-enum EncodedStringVec {
-    Raw(Vec<u8>),
-    Int(Vec<u8>),
-    Lzf(Vec<u8>),
-}
-
-impl fmt::Display for EncodedStringVec {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::EncodedStringVec::*;
-        match self {
-            &Raw(ref v) => write!(f, "Raw(\"{}\")", String::from_utf8_lossy(&v[..])),
-            &Int(ref v) => write!(f, "Int({})",     v.iter().fold(0, |a, j| a << 8 | (*j as i32))),
-            &Lzf(ref v) => write!(f, "Lzf({:?})",   v),
-        }
-    }
-}
-
-impl<'a> From<EncodedString<'a>> for EncodedStringVec {
-    fn from(s: EncodedString<'a>) -> Self {
-        match s {
-            EncodedString::Raw(_, v)       => EncodedStringVec::Raw(Vec::from(v)),
-            EncodedString::Int(_, v)       => EncodedStringVec::Int(Vec::from(v)),
-            EncodedString::Lzf(_, _, _, v) => EncodedStringVec::Lzf(Vec::from(v)),
-        }
-    }
-}
-
+use super::parser::{ RDBSer, RDBDec, Record, DatabaseNumber, RDBVersion };
 
 pub fn memory_map_read<F, A>(file: &File, f: F) -> Result<A>
     where F: Fn(&mut [u8]) -> A
@@ -62,7 +30,7 @@ pub struct PartRDB {
     check_duplication: bool,
     output_dir:        String,
     files:             HashMap<u32, File>,
-    keys:              HashMap<u32, HashSet<EncodedStringVec>>,
+    keys:              HashMap<u32, HashSet<String>>,
 }
 
 const PART_FILE_PREFIX:  &'static str = "PART_";
@@ -72,16 +40,13 @@ const MERGE_RDB_VERSION: &'static str = "0006";
 
 impl PartRDB{
     pub fn new(check_duplication: bool, output_dir: String) -> Result<Self> {
-        if Path::new(&output_dir).is_dir() {
-            Ok(PartRDB {
-                check_duplication: check_duplication,
-                output_dir:        output_dir,
-                files:             HashMap::new(),
-                keys:              HashMap::new(),
-            })
-        } else {
-            Err(Error::new(ErrorKind::NotFound, ""))
-        }
+        assert_result!(Path::new(&output_dir).is_dir(), Error::new(ErrorKind::NotFound, "no such directory"));
+        Ok(PartRDB {
+            check_duplication: check_duplication,
+            output_dir:        output_dir,
+            files:             HashMap::new(),
+            keys:              HashMap::new(),
+        })
     }
 
     fn part_rdb_path(&self, db_num: u32) -> PathBuf {
@@ -109,7 +74,7 @@ impl PartRDB{
         }
 
         let &Record(key, _, _) = record;
-        let key = EncodedStringVec::from(key);
+        let key = try!(String::decode(&key));
         match (self.keys.get_mut(&num), self.files.get_mut(&num)) {
             (Some(ref mut kset), Some(ref mut file)) => {
                 if !self.check_duplication || !kset.contains(&key) {
