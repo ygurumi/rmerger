@@ -5,7 +5,7 @@ extern crate getopts;
 
 use rmerger::logger::StdLogger;
 use rmerger::file::{ memory_map_read, PartRDB};
-use rmerger::parser::{ rdb, RDB, Database, DatabaseNumber };
+use rmerger::parser::{ rdb, RDB, RDBSer, Database, DatabaseNumber };
 
 use std::collections::HashSet;
 use nom::IResult;
@@ -53,7 +53,8 @@ fn main() {
         memory_map_read(&file, |s| {
             let mut srdb = srdb.lock().unwrap();
             match rdb(s) {
-                IResult::Done(_, RDB(_, dbs, _)) => {
+                IResult::Done(_, RDB(ver, dbs, _)) => {
+                    info!("version: {}", ver.to_string().unwrap());
                     for db in dbs {
                         let Database(db_num, records) = db;
                         let DatabaseNumber(_, num) = db_num;

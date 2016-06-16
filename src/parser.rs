@@ -108,6 +108,12 @@ impl<'a> From<EncodedLength<'a>> for u32 {
 /// serialize into RDB format
 pub trait RDBSer {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize>;
+
+    fn to_string(&self) -> IoResult<String> {
+        let mut v = Vec::new();
+        try!(self.ser(&mut v));
+        Ok(String::from_utf8_lossy(&v[..]).to_string())
+    }
 }
 
 impl<'a> RDBSer for EncodedLength<'a> {
