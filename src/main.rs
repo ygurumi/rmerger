@@ -42,16 +42,13 @@ fn main() {
     let output_dir = matches.opt_str("o").unwrap_or("./".to_string());
     info!("output directory: {}", output_dir);
 
-    let srdb = std::sync::Mutex::new(
-        PartRDB::new(check_duplication, output_dir).unwrap()
-    );
+    let mut srdb = PartRDB::new(check_duplication, output_dir).unwrap();
 
     for arg in matches.free {
         info!("start: {}", arg);
         let file = std::fs::File::open(arg.clone()).unwrap();
 
         memory_map_read(&file, |s| {
-            let mut srdb = srdb.lock().unwrap();
             match rdb(s) {
                 IResult::Done(_, RDB(ver, dbs, _)) => {
                     info!("version: {}", ver.to_string().unwrap());
@@ -73,11 +70,8 @@ fn main() {
     }
 
     info!("start: merge");
-    {
-        let mut srdb = srdb.lock().unwrap();
-        srdb.close_part_files();
-        srdb.merge().unwrap();
-    }
+    srdb.close_part_files();
+    srdb.merge().unwrap();
     info!("finish: merge");
 }
 

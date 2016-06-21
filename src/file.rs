@@ -2,7 +2,6 @@ use nix::sys::stat::fstat;
 use nix::sys::mman::{ mmap, munmap, PROT_READ, MAP_SHARED };
 use nix::libc::size_t;
 
-use std::sync::Mutex;
 use std::os::unix::io::AsRawFd;
 use std::slice::from_raw_parts_mut;
 use std::ptr::null_mut;
@@ -14,7 +13,7 @@ use std::io::{ Result, Write, Error, ErrorKind };
 use super::parser::{ RDBSer, RDBDec, Record, DatabaseNumber, RDBVersion };
 
 pub fn memory_map_read<F, A>(file: &File, f: F) -> Result<A>
-    where F: Fn(&mut [u8]) -> A
+    where F: FnOnce(&mut [u8]) -> A
 {
     let fd = file.as_raw_fd();
     let sz = try!(fstat(fd)).st_size as size_t;
@@ -95,29 +94,21 @@ impl PartRDB{
     }
 
     pub fn merge(&self) -> Result<usize> {
-        let mfile = Mutex::new(try!(File::create(self.merge_rdb_path())));
         let version = RDBVersion(MERGE_RDB_VERSION.as_bytes());
-        let mut n = 0;
-
-        {
-            let mut mfile = mfile.lock().unwrap();
-            n += try!(version.ser(&mut *mfile));
-        }
+        let mut mfile = try!(File::create(self.merge_rdb_path()));
+        let mut n = try!(version.ser(&mut mfile));
 
         for key in self.keys.keys() {
             let sfile = try!(File::open(self.part_rdb_path(*key)));
             let result = memory_map_read(&sfile, |bytes| {
-                mfile.lock().unwrap().write(bytes)
+                mfile.write(bytes)
             });
             n += try!(try!(result));
         }
 
-        {
-            let mut mfile = mfile.lock().unwrap();
-            n += try!(mfile.write(&[0xff][..]));
-            // Disable CRC64 checksum
-            n += try!(mfile.write(&[0x00; 8][..]));
-        }
+        n += try!(mfile.write(&[0xff][..]));
+        // Disable CRC64 checksum
+        n += try!(mfile.write(&[0x00; 8][..]));
 
         Ok(n)
     }
