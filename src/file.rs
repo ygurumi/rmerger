@@ -24,7 +24,6 @@ pub fn memory_map_read<F, A>(file: &File, f: F) -> Result<A>
     Ok(result)
 }
 
-
 pub struct PartRDB {
     check_duplication: bool,
     output_dir:        String,
@@ -37,6 +36,15 @@ const PART_FILE_SUFFIX:  &'static str = ".rdb";
 const MERGE_FILE:        &'static str = "MERGE.rdb";
 const MERGE_RDB_VERSION: &'static str = "0006";
 
+fn part_rdb_path(output_dir: &String, db_num: u32) -> PathBuf {
+    let name = format!("{}{:08x}{}", PART_FILE_PREFIX, db_num, PART_FILE_SUFFIX);
+    Path::new(output_dir).join(&name)
+}
+
+fn merge_rdb_path(output_dir: &String) -> PathBuf {
+    Path::new(output_dir).join(MERGE_FILE)
+}
+
 impl PartRDB{
     pub fn new(check_duplication: bool, output_dir: String) -> Result<Self> {
         assert_result!(Path::new(&output_dir).is_dir(), Error::new(ErrorKind::NotFound, "no such directory"));
@@ -48,20 +56,11 @@ impl PartRDB{
         })
     }
 
-    fn part_rdb_path(&self, db_num: u32) -> PathBuf {
-        let name = format!("{}{:08x}{}", PART_FILE_PREFIX, db_num, PART_FILE_SUFFIX);
-        Path::new(&self.output_dir).join(&name)
-    }
-
-    fn merge_rdb_path(&self) -> PathBuf {
-        Path::new(&self.output_dir).join(MERGE_FILE)
-    }
-
     pub fn write<'a>(&mut self, db_num: DatabaseNumber<'a>, record: &Record) -> Result<()> {
         let DatabaseNumber(_, num) = db_num;
 
         if !self.files.contains_key(&num) {
-            let path = self.part_rdb_path(num);
+            let path = part_rdb_path(&self.output_dir, num);
             info!("create temporary rdb: {:?}", path);
             let mut file = try!(File::create(path));
             try!(db_num.ser(&mut file));
@@ -95,11 +94,11 @@ impl PartRDB{
 
     pub fn merge(&self) -> Result<usize> {
         let version = RDBVersion(MERGE_RDB_VERSION.as_bytes());
-        let mut mfile = try!(File::create(self.merge_rdb_path()));
+        let mut mfile = try!(File::create(merge_rdb_path(&self.output_dir)));
         let mut n = try!(version.ser(&mut mfile));
 
         for key in self.keys.keys() {
-            let sfile = try!(File::open(self.part_rdb_path(*key)));
+            let sfile = try!(File::open(part_rdb_path(&self.output_dir, *key)));
             let result = memory_map_read(&sfile, |bytes| {
                 mfile.write(bytes)
             });
