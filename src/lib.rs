@@ -1,4 +1,3 @@
-#[macro_use] extern crate log;
 #[macro_use] extern crate nom;
 #[macro_use] extern crate bitflags;
 extern crate nix;
@@ -11,4 +10,3 @@ macro_rules! assert_result {
 
 pub mod parser;
 pub mod file;
-pub mod logger;

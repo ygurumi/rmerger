@@ -1,9 +1,7 @@
-#[macro_use] extern crate log;
 extern crate nom;
 extern crate rmerger;
 extern crate getopts;
 
-use rmerger::logger::StdLogger;
 use rmerger::file::{ memory_map_read, PartRDB};
 use rmerger::parser::{ rdb, RDB, RDBSer, Database, DatabaseNumber };
 
@@ -12,8 +10,6 @@ use nom::IResult;
 use getopts::Options;
 
 fn main() {
-    StdLogger::init(None).unwrap();
-
     let args: Vec<String> = std::env::args().collect();
     let program = args[0].clone();
     let mut opts = Options::new();
@@ -31,33 +27,33 @@ fn main() {
 
     let target_db = database_set(matches.opt_strs("d")).unwrap();
     if target_db.is_empty() {
-        info!("target DB: ALL");
+        println!("[info] target DB: ALL");
     } else {
-        info!("target DB: {:?}", target_db);
+        println!("[info] target DB: {:?}", target_db);
     }
 
     let check_duplication = !matches.opt_present("C");
-    info!("check duplication of keys: {}", check_duplication);
+    println!("[info] check duplication of keys: {}", check_duplication);
 
     let output_dir = matches.opt_str("o").unwrap_or("./".to_string());
-    info!("output directory: {}", output_dir);
+    println!("[info] output directory: {}", output_dir);
 
     let mut srdb = PartRDB::new(check_duplication, output_dir).unwrap();
 
     for arg in matches.free {
-        info!("start: {}", arg);
+        println!("[info] start: {}", arg);
         let file = std::fs::File::open(arg.clone()).unwrap();
 
         memory_map_read(&file, |s| {
             match rdb(s) {
                 IResult::Done(_, RDB(ver, dbs, _)) => {
-                    info!("version: {}", ver.to_string().unwrap());
+                    println!("[info] version: {}", ver.to_string().unwrap());
                     for db in dbs {
                         let Database(db_num, records) = db;
                         let DatabaseNumber(_, num) = db_num;
                         if target_db.is_empty() || target_db.contains(&num) {
                             for record in records {
-                                srdb.write(db_num, &record).unwrap();
+                                srdb.write(db_num, &record, true).unwrap();
                             }
                         }
                     }
@@ -66,13 +62,13 @@ fn main() {
             }
         }).unwrap();
 
-        info!("finish: {}", arg);
+        println!("[info] finish: {}", arg);
     }
 
-    info!("start: merge");
+    println!("[info] start: merge");
     srdb.close_part_files();
     srdb.merge().unwrap();
-    info!("finish: merge");
+    println!("[info] finish: merge");
 }
 
 

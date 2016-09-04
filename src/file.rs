@@ -56,12 +56,16 @@ impl PartRDB{
         })
     }
 
-    pub fn write<'a>(&mut self, db_num: DatabaseNumber<'a>, record: &Record) -> Result<()> {
+    pub fn write<'a>(&mut self, db_num: DatabaseNumber<'a>, record: &Record, verbose: bool) -> Result<()> {
         let DatabaseNumber(_, num) = db_num;
 
         if !self.files.contains_key(&num) {
             let path = part_rdb_path(&self.output_dir, num);
-            info!("create temporary rdb: {:?}", path);
+
+            if verbose {
+                println!("[info] create temporary rdb: {:?}", path);
+            }
+
             let mut file = try!(File::create(path));
             try!(db_num.ser(&mut file));
             self.files.insert(num, file);
@@ -78,8 +82,8 @@ impl PartRDB{
                 if !self.check_duplication || !kset.contains(&key) {
                     try!(record.ser(file));
                     kset.insert(key);
-                } else {
-                    warn!("duplicate key, discard: {}", key);
+                } else if verbose {
+                    println!("[warn] duplicate key, discard: {}", key);
                 }
             },
             _ => unreachable!(),

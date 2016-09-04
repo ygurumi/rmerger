@@ -5,7 +5,6 @@ authors = ["ygurumi <ygurumi@gmail.com>"]
 license = "MIT"
 
 [dependencies]
-log      = "0.3"
 nom      = "1.2"
 nix      = "0.6"
 bitflags = "0.7"
