@@ -73,7 +73,7 @@ fn main() {
 
 
 fn print_usage(program: &str, opts: Options) {
-    let brief = format!("Usage: {} [options] FILE.rdb ...", program);
+    let brief = format!("Usage: {} [Options] FILE.rdb ...", program);
     print!("{}", opts.usage(&brief));
 }
 
@@ -81,7 +81,7 @@ fn print_usage(program: &str, opts: Options) {
 fn database_set(strs: Vec<String>) -> Result<HashSet<u32>, std::num::ParseIntError> {
     let mut set = HashSet::new();
     for i in strs {
-        set.insert(try!(i.parse()));
+        set.insert(i.parse()?);
     }
     Ok(set)
 }

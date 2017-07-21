@@ -16,11 +16,11 @@ pub fn memory_map_read<F, A>(file: &File, f: F) -> Result<A>
     where F: FnOnce(&mut [u8]) -> A
 {
     let fd = file.as_raw_fd();
-    let sz = try!(fstat(fd)).st_size as size_t;
-    let mm = try!(mmap(null_mut(), sz, PROT_READ, MAP_SHARED, fd, 0));
+    let sz = fstat(fd)?.st_size as size_t;
+    let mm = mmap(null_mut(), sz, PROT_READ, MAP_SHARED, fd, 0)?;
     let s = unsafe { from_raw_parts_mut(mm as *mut u8, sz) };
     let result = f(s);
-    try!(munmap(mm, sz));
+    munmap(mm, sz)?;
     Ok(result)
 }
 
@@ -66,8 +66,8 @@ impl PartRDB{
                 println!("[info] create temporary rdb: {:?}", path);
             }
 
-            let mut file = try!(File::create(path));
-            try!(db_num.ser(&mut file));
+            let mut file = File::create(path)?;
+            db_num.ser(&mut file)?;
             self.files.insert(num, file);
         }
 
@@ -76,11 +76,11 @@ impl PartRDB{
         }
 
         let &Record(key, _, _) = record;
-        let key = try!(String::decode(&key));
+        let key = String::decode(&key)?;
         match (self.keys.get_mut(&num), self.files.get_mut(&num)) {
             (Some(ref mut kset), Some(ref mut file)) => {
                 if !self.check_duplication || !kset.contains(&key) {
-                    try!(record.ser(file));
+                    record.ser(file)?;
                     kset.insert(key);
                 } else if verbose {
                     println!("[warn] duplicate key, discard: {}", key);
@@ -98,20 +98,20 @@ impl PartRDB{
 
     pub fn merge(&self) -> Result<usize> {
         let version = RDBVersion(MERGE_RDB_VERSION.as_bytes());
-        let mut mfile = try!(File::create(merge_rdb_path(&self.output_dir)));
-        let mut n = try!(version.ser(&mut mfile));
+        let mut mfile = File::create(merge_rdb_path(&self.output_dir))?;
+        let mut n = version.ser(&mut mfile)?;
 
         for key in self.keys.keys() {
-            let sfile = try!(File::open(part_rdb_path(&self.output_dir, *key)));
+            let sfile = File::open(part_rdb_path(&self.output_dir, *key))?;
             let result = memory_map_read(&sfile, |bytes| {
                 mfile.write(bytes)
             });
-            n += try!(try!(result));
+            n += result??;
         }
 
-        n += try!(mfile.write(&[0xff][..]));
+        n += mfile.write(&[0xff][..])?;
         // Disable CRC64 checksum
-        n += try!(mfile.write(&[0x00; 8][..]));
+        n += mfile.write(&[0x00; 8][..])?;
 
         Ok(n)
     }

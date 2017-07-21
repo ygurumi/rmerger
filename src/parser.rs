@@ -6,19 +6,18 @@ use std::io::{
     ErrorKind as IoErrorKind,
 };
 
-
 bitflags! {
-    flags ValueType: u8 {
-        const VT_STRING            = 0x00,
-        const VT_LIST              = 0x01,
-        const VT_SET               = 0x02,
-        const VT_SORTEDSET         = 0x03,
-        const VT_HASHMAP           = 0x04,
-        //const VT_ZIPMAP            = 0x09, // deprecated (>= RDB v4)
-        const VT_ZIPLIST           = 0x0a,
-        const VT_INTSET            = 0x0b,
-        const VT_SORTEDSET_ZIPLIST = 0x0c,
-        const VT_HASHMAP_ZIPLIST   = 0x0d,
+    struct ValueType: u8 {
+        const VT_STRING            = 0x00;
+        const VT_LIST              = 0x01;
+        const VT_SET               = 0x02;
+        const VT_SORTEDSET         = 0x03;
+        const VT_HASHMAP           = 0x04;
+        //const VT_ZIPMAP            = 0x09; // deprecated (>= RDB v4)
+        const VT_ZIPLIST           = 0x0a;
+        const VT_INTSET            = 0x0b;
+        const VT_SORTEDSET_ZIPLIST = 0x0c;
+        const VT_HASHMAP_ZIPLIST   = 0x0d;
     }
 }
 
@@ -136,7 +135,7 @@ impl<'a> RDBDec<EncodedString<'a>> for String {
                         let literal_len = ctrl + 1;
                         let literal_end = i + literal_len;
                         assert_result!(literal_end <= len, IoError::new(IoErrorKind::Other, "failed to decode LZF"));
-                        try!(out.write(&l[i..literal_end]));
+                        out.write(&l[i..literal_end])?;
                         o += literal_len;
                         i += literal_len;
                     } else {
@@ -152,7 +151,7 @@ impl<'a> RDBDec<EncodedString<'a>> for String {
                         i += 1;
                         for j in backref_start..(backref_start+backref_len) {
                             let buf = [out[j]];
-                            try!(out.write(&buf[..]));
+                            out.write(&buf[..])?;
                             o += 1;
                         }
                     }
@@ -170,7 +169,7 @@ pub trait RDBSer {
 
     fn to_string(&self) -> IoResult<String> {
         let mut v = Vec::new();
-        try!(self.ser(&mut v));
+        self.ser(&mut v)?;
         Ok(String::from_utf8_lossy(&v[..]).to_string())
     }
 }
@@ -187,13 +186,13 @@ impl<'a> RDBSer for EncodedLength<'a> {
 impl<'a> RDBSer for EncodedString<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         match self {
-            &Raw(s, v) => Ok(try!(s.ser(w)) + try!(w.write(v))),
-            &Int(s, v) => Ok(try!(s.ser(w)) + try!(w.write(v))),
+            &Raw(s, v) => Ok(s.ser(w)? + w.write(v)?),
+            &Int(s, v) => Ok(s.ser(w)? + w.write(v)?),
             &Lzf(s, t, u, v) => Ok(
-                try!(s.ser(w)) +
-                try!(t.ser(w)) +
-                try!(u.ser(w)) +
-                try!(w.write(v))
+                s.ser(w)? +
+                    t.ser(w)? +
+                    u.ser(w)? +
+                    w.write(v)?
             ),
         }
     }
@@ -202,9 +201,9 @@ impl<'a> RDBSer for EncodedString<'a> {
 impl<'a> RDBSer for EncodedList<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         let &EncodedList(s, ref v) = self;
-        let mut n = try!(s.ser(w));
+        let mut n = s.ser(w)?;
         for i in v {
-            n += try!(i.ser(w));
+            n += i.ser(w)?;
         }
         Ok(n)
     }
@@ -213,9 +212,9 @@ impl<'a> RDBSer for EncodedList<'a> {
 impl<'a> RDBSer for EncodedSet<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         let &EncodedSet(s, ref v) = self;
-        let mut n = try!(s.ser(w));
+        let mut n = s.ser(w)?;
         for i in v {
-            n += try!(i.ser(w));
+            n += i.ser(w)?;
         }
         Ok(n)
     }
@@ -224,12 +223,12 @@ impl<'a> RDBSer for EncodedSet<'a> {
 impl<'a> RDBSer for EncodedSortedset<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         let &EncodedSortedset(s, ref tuples) = self;
-        let mut n = try!(s.ser(w));
+        let mut n = s.ser(w)?;
         for i in tuples {
             let &(v, u, f) = i;
-            n += try!(v.ser(w));
-            n += try!(w.write(&[u][..]));
-            n += try!(w.write(f));
+            n += v.ser(w)?;
+            n += w.write(&[u][..])?;
+            n += w.write(f)?;
         }
         Ok(n)
     }
@@ -238,11 +237,11 @@ impl<'a> RDBSer for EncodedSortedset<'a> {
 impl<'a> RDBSer for EncodedHashmap<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         let &EncodedHashmap(s, ref tuples) = self;
-        let mut n = try!(s.ser(w));
+        let mut n = s.ser(w)?;
         for i in tuples {
             let &(k, v) = i;
-            n += try!(k.ser(w));
-            n += try!(v.ser(w));
+            n += k.ser(w)?;
+            n += v.ser(w)?;
         }
         Ok(n)
     }
@@ -282,8 +281,8 @@ impl<'a> RDBSer for EncodedHashmapZiplist<'a> {
 impl<'a> RDBSer for ExpiryTime<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         match self {
-            &MilliSec(v) => Ok(try!(w.write(&[0xfc][..])) + try!(w.write(v))),
-            &Sec(v)      => Ok(try!(w.write(&[0xfd][..])) + try!(w.write(v))),
+            &MilliSec(v) => Ok(w.write(&[0xfc][..])? + w.write(v)?),
+            &Sec(v)      => Ok(w.write(&[0xfd][..])? + w.write(v)?),
         }
     }
 }
@@ -294,54 +293,54 @@ impl<'a> RDBSer for Record<'a> {
         let mut n = 0;
 
         for exp in opt {
-            n += try!(exp.ser(w))
+            n += exp.ser(w)?
         }
 
         match val {
             &V0(ref v) => {
-                n += try!(w.write(&[VT_STRING.bits()][..]));
-                n += try!(key.ser(w));
-                n += try!(v.ser(w));
+                n += w.write(&[VT_STRING.bits()][..])?;
+                n += key.ser(w)?;
+                n += v.ser(w)?;
             },
             &V1(ref v) => {
-                n += try!(w.write(&[VT_LIST.bits()][..]));
-                n += try!(key.ser(w));
-                n += try!(v.ser(w));
+                n += w.write(&[VT_LIST.bits()][..])?;
+                n += key.ser(w)?;
+                n += v.ser(w)?;
             },
             &V2(ref v) => {
-                n += try!(w.write(&[VT_SET.bits()][..]));
-                n += try!(key.ser(w));
-                n += try!(v.ser(w));
+                n += w.write(&[VT_SET.bits()][..])?;
+                n += key.ser(w)?;
+                n += v.ser(w)?;
             },
             &V3(ref v) => {
-                n += try!(w.write(&[VT_SORTEDSET.bits()][..]));
-                n += try!(key.ser(w));
-                n += try!(v.ser(w));
+                n += w.write(&[VT_SORTEDSET.bits()][..])?;
+                n += key.ser(w)?;
+                n += v.ser(w)?;
             },
             &V4(ref v) => {
-                n += try!(w.write(&[VT_HASHMAP.bits()][..]));
-                n += try!(key.ser(w));
-                n += try!(v.ser(w));
+                n += w.write(&[VT_HASHMAP.bits()][..])?;
+                n += key.ser(w)?;
+                n += v.ser(w)?;
             },
             &VA(ref v) => {
-                n += try!(w.write(&[VT_ZIPLIST.bits()][..]));
-                n += try!(key.ser(w));
-                n += try!(v.ser(w));
+                n += w.write(&[VT_ZIPLIST.bits()][..])?;
+                n += key.ser(w)?;
+                n += v.ser(w)?;
             },
             &VB(ref v) => {
-                n += try!(w.write(&[VT_INTSET.bits()][..]));
-                n += try!(key.ser(w));
-                n += try!(v.ser(w));
+                n += w.write(&[VT_INTSET.bits()][..])?;
+                n += key.ser(w)?;
+                n += v.ser(w)?;
             },
             &VC(ref v) => {
-                n += try!(w.write(&[VT_SORTEDSET_ZIPLIST.bits()][..]));
-                n += try!(key.ser(w));
-                n += try!(v.ser(w));
+                n += w.write(&[VT_SORTEDSET_ZIPLIST.bits()][..])?;
+                n += key.ser(w)?;
+                n += v.ser(w)?;
             },
             &VD(ref v) => {
-                n += try!(w.write(&[VT_HASHMAP_ZIPLIST.bits()][..]));
-                n += try!(key.ser(w));
-                n += try!(v.ser(w));
+                n += w.write(&[VT_HASHMAP_ZIPLIST.bits()][..])?;
+                n += key.ser(w)?;
+                n += v.ser(w)?;
             },
         }
         Ok(n)
@@ -351,8 +350,8 @@ impl<'a> RDBSer for Record<'a> {
 impl<'a> RDBSer for DatabaseNumber<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         let &DatabaseNumber(num, _) = self;
-        let mut n = try!(w.write(&[0xfe][..]));
-        n += try!(num.ser(w));
+        let mut n = w.write(&[0xfe][..])?;
+        n += num.ser(w)?;
         Ok(n)
     }
 }
@@ -360,9 +359,9 @@ impl<'a> RDBSer for DatabaseNumber<'a> {
 impl<'a> RDBSer for Database<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         let &Database(num, ref records) = self;
-        let mut n = try!(num.ser(w));
+        let mut n = num.ser(w)?;
         for record in records {
-            n += try!(record.ser(w));
+            n += record.ser(w)?;
         }
         Ok(n)
     }
@@ -371,8 +370,8 @@ impl<'a> RDBSer for Database<'a> {
 impl<'a> RDBSer for RDBVersion<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         let &RDBVersion(v) = self;
-        let mut n = try!(w.write(b"REDIS"));
-        n += try!(w.write(v));
+        let mut n = w.write(b"REDIS")?;
+        n += w.write(v)?;
         Ok(n)
     }
 }
@@ -387,51 +386,47 @@ impl<'a> RDBSer for Checksum<'a> {
 impl<'a> RDBSer for RDB<'a> {
     fn ser<W: Write>(&self, w: &mut W) -> IoResult<usize> {
         let &RDB(v, ref dbs, opt) = self;
-        let mut n = try!(v.ser(w));
+        let mut n = v.ser(w)?;
         for db in dbs {
-            n += try!(db.ser(w));
+            n += db.ser(w)?;
         }
-        n += try!(w.write(&[0xff][..]));
+        n += w.write(&[0xff][..])?;
         for cs in opt {
-            n += try!(cs.ser(w));
+            n += cs.ser(w)?;
         }
         Ok(n)
     }
 }
 
-
 /// parser combinator
 named!(
-    encoded_length(&[u8]) -> EncodedLength,
-    chain!(
-        l: switch!(
-            peek!(bits!(pair!(take_bits!(u8, 2), take_bits!(u8, 6)))),
-            (0b00, v) => map!(
-                take!(1),
-                |p| I(v as u32, p)
-            ) |
-            (0b01, _) => chain!(
-                p: peek!(take!(2)) ~
-                v: be_u16,
-                || I(v as u32 & 0x3FFF, p)
-            ) |
-            (0b10, _) => chain!(
-                p: peek!(take!(5)) ~
-                take!(1) ~
-                v: be_u32,
-                || I(v, p)
-            ) |
-            (0b11, v) => map!(
-                take!(1),
-                |p| S(v, p)
-            )
-        ),
-        || l
+    encoded_length<&[u8], EncodedLength>,
+    switch!(
+        peek!(bits!(pair!(take_bits!(u8, 2), take_bits!(u8, 6)))),
+        (0b00, v) => do_parse!(
+            p: take!(1) >>
+            (I(v as u32, p))
+        ) |
+        (0b01, _) => do_parse!(
+            p: peek!(take!(2)) >>
+            v: be_u16          >>
+            (I(v as u32 & 0x3FFF, p))
+        ) |
+        (0b10, _) => do_parse!(
+            p: peek!(take!(5)) >>
+            take!(1)           >>
+            v: be_u32          >>
+            (I(v, p))
+        ) |
+        (0b11, v) => do_parse!(
+            p: take!(1) >>
+            (S(v, p))
+        )
     )
 );
 
 named!(
-    value_type(&[u8]) -> ValueType,
+    value_type<&[u8], ValueType>,
     map!(
         bits!(pair!(tag_bits!(u8, 1, 0b0), take_bits!(u8, 7))),
         |(_, n)| ValueType::from_bits_truncate(n)
@@ -439,116 +434,113 @@ named!(
 );
 
 named!(
-    encoded_string(&[u8]) -> EncodedString,
-    chain!(
-        s: encoded_length ~
-        r: switch!(
-            value!(s),
-            I(n,          _) => map!(take!(n), |v| Raw(s, v)) |
-            S(0b00000000, _) => map!(take!(1), |v| Int(s, v)) |
-            S(0b00000001, _) => map!(take!(2), |v| Int(s, v)) |
-            S(0b00000010, _) => map!(take!(4), |v| Int(s, v)) |
-            S(0b00000011, _) => chain!(
-                t: encoded_length ~
-                u: encoded_length ~
-                v: take!(u32::from(t)),
-                || Lzf(s, t, u, v)
-            )
-        ),
-        || r
+    encoded_string<&[u8], EncodedString>,
+    switch!(
+        encoded_length,
+        I(n, s)            => map!(take!(n), |v| Raw(I(n, s), v)) |
+        s@S(0b00000000, _) => map!(take!(1), |v| Int(s, v)) |
+        s@S(0b00000001, _) => map!(take!(2), |v| Int(s, v)) |
+        s@S(0b00000010, _) => map!(take!(4), |v| Int(s, v)) |
+        s@S(0b00000011, _) => do_parse!(
+            t: encoded_length      >>
+            u: encoded_length      >>
+            v: take!(u32::from(t)) >>
+            (Lzf(s, t, u, v))
+        )
     )
 );
 
 named!(
-    encoded_sequence(&[u8]) -> (EncodedLength, Vec<EncodedString>),
-    chain!(
-        s: encoded_length ~
-        v: count!(encoded_string, u32::from(s) as usize),
-        || (s, v)
+    encoded_sequence<&[u8], (EncodedLength, Vec<EncodedString>)>,
+    do_parse!(
+        s: encoded_length                                >>
+        v: count!(encoded_string, u32::from(s) as usize) >>
+        (s, v)
     )
 );
 
 named!(
-    encoded_list(&[u8]) -> EncodedList,
+    encoded_list<&[u8], EncodedList>,
     map!(encoded_sequence, |(s, v)| EncodedList(s, v))
 );
 
 named!(
-    encoded_set(&[u8]) -> EncodedSet,
+    encoded_set<&[u8], EncodedSet>,
     map!(encoded_sequence, |(s, v)| EncodedSet(s, v))
 );
 
 named!(
-    encoded_sortedset(&[u8]) -> EncodedSortedset,
-    chain!(
-        s: encoded_length ~
+    encoded_sortedset<&[u8], EncodedSortedset>,
+    do_parse!(
+        s: encoded_length >>
         v: count!(
-            chain!(
-                w: encoded_string ~
-                u: be_u8 ~
-                f: take!(u),
-                || (w, u, f)
-            ),
-            u32::from(s.clone()) as usize),
-        || EncodedSortedset(s, v)
+           do_parse!(
+               w: encoded_string >>
+               u: be_u8          >>
+               f: take!(u)       >>
+               (w, u, f)
+           ),
+           u32::from(s.clone()) as usize
+        ) >>
+        (EncodedSortedset(s, v))
     )
 );
 
 named!(
-    encoded_hash(&[u8]) -> EncodedHashmap,
-    chain!(
-        s: encoded_length ~
-        t: count!(pair!(encoded_string, encoded_string), u32::from(s.clone()) as usize),
-        || EncodedHashmap(s, t)
+    encoded_hash<&[u8], EncodedHashmap>,
+    do_parse!(
+        s: encoded_length >>
+        t: count!(pair!(encoded_string, encoded_string), u32::from(s.clone()) as usize) >>
+        (EncodedHashmap(s, t))
     )
 );
 
 named!(
-    encoded_ziplist(&[u8]) -> EncodedZiplist,
+    encoded_ziplist<&[u8], EncodedZiplist>,
     map!(encoded_string, |s| EncodedZiplist(s))
 );
 
 named!(
-    encoded_intset(&[u8]) -> EncodedIntset,
+    encoded_intset<&[u8], EncodedIntset>,
     map!(encoded_string, |s| EncodedIntset(s))
 );
 
 named!(
-    encoded_sortedset_ziplist(&[u8]) -> EncodedSortedsetZiplist,
+    encoded_sortedset_ziplist<&[u8], EncodedSortedsetZiplist>,
     map!(encoded_string, |s| EncodedSortedsetZiplist(s))
 );
 
 named!(
-    encoded_hashmap_ziplist(&[u8]) -> EncodedHashmapZiplist,
+    encoded_hashmap_ziplist<&[u8], EncodedHashmapZiplist>,
     map!(encoded_string, |s| EncodedHashmapZiplist(s))
 );
 
 // FC {8 bytes unsigned long}
 named!(
-    expiry_time_msec(&[u8]) -> ExpiryTime,
-    chain!(
-        tag!([0xfc]) ~
-        e: take!(8),
-        || MilliSec(e)
+    expiry_time_msec<&[u8], ExpiryTime>,
+    do_parse!(
+        tag!([0xfc]) >>
+        e: take!(8)  >>
+        (MilliSec(e))
     )
 );
 
 // FD {4 bytes unsigned int}
 named!(
-    expiry_time_sec(&[u8]) -> ExpiryTime,
-    chain!(
-        tag!([0xfd]) ~
-        e: take!(4),
-        || Sec(e)
+    expiry_time_sec<&[u8], ExpiryTime>,
+    do_parse!(
+        tag!([0xfd]) >>
+        e: take!(4)  >>
+        (Sec(e))
     )
 );
 
 named!(
-    pub record(&[u8]) -> Record,
-    chain!(
-        o: alt!(expiry_time_msec | expiry_time_sec)? ~
-        t: value_type ~
-        k: encoded_string ~
+    pub record<&[u8], Record>,
+    do_parse!(
+        o: opt!(alt!(expiry_time_msec | expiry_time_sec)) >>
+        t: value_type >>
+        k: encoded_string >>
         v: switch!(
             value!(t),
             VT_STRING            => map!(encoded_string,            |v| V0(v)) |
@@ -560,60 +552,60 @@ named!(
             VT_INTSET            => map!(encoded_intset,            |v| VB(v)) |
             VT_SORTEDSET_ZIPLIST => map!(encoded_sortedset_ziplist, |v| VC(v)) |
             VT_HASHMAP_ZIPLIST   => map!(encoded_hashmap_ziplist,   |v| VD(v))
-        ),
-        || Record(k, v, o)
+        ) >>
+        (Record(k, v, o))
     )
 );
 
 // FE {length encoding}
 named!(
-    pub database_number(&[u8]) -> DatabaseNumber,
-    chain!(
-        tag!([0xfe]) ~
-        n: encoded_length,
-        || DatabaseNumber(n, u32::from(n))
+    pub database_number<&[u8], DatabaseNumber>,
+    do_parse!(
+        tag!([0xfe])      >>
+        n: encoded_length >>
+        (DatabaseNumber(n, u32::from(n)))
     )
 );
 
 // FF
 named!(
-    end_of_rdb(&[u8]) -> &[u8],
+    end_of_rdb<&[u8], &[u8]>,
     tag!([0xff])
 );
 
 named!(
-    checksum(&[u8]) -> Checksum,
+    checksum<&[u8], Checksum>,
     map!(take!(8), |v| Checksum(v))
 );
 
 // "REDIS0006"
 named!(
-    rdb_version(&[u8]) -> RDBVersion,
-    chain!(
-        tag!("REDIS") ~
-        v: take!(4),
-        || RDBVersion(v)
+    rdb_version<&[u8], RDBVersion>,
+    do_parse!(
+        tag!("REDIS") >>
+        v: take!(4)   >>
+        (RDBVersion(v))
     )
 );
 
 named!(
-    pub database(&[u8]) -> Database,
-    chain!(
-        n: database_number ~
-        r: many0!(record),
-        || Database(n, r)
+    pub database<&[u8], Database>,
+    do_parse!(
+        n: database_number >>
+        r: many0!(record)  >>
+        (Database(n, r))
     )
 );
 
 named!(
-    pub rdb(&[u8]) -> RDB,
-    chain!(
-        v: rdb_version ~
-        d: many0!(database) ~
-        end_of_rdb ~
-        c: checksum? ~
-        eof,
-        || RDB(v, d, c)
+    pub rdb<&[u8], RDB>,
+    do_parse!(
+        v: rdb_version      >>
+        d: many0!(database) >>
+        end_of_rdb          >>
+        c: opt!(checksum)   >>
+        eof!()              >>
+        (RDB(v, d, c))
     )
 );
 
